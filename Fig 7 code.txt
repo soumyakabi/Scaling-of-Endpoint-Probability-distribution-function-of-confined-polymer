@@ -1,0 +1,277 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+FIGURE 11: 2D Phase Diagram (κ vs a/L) — FIXED VERTICAL BOUNDARIES
+===================================================================
+Generates publication-ready phase diagram from Case 3 P(x) confinement-strength
+scaling analysis, with manual regime boundaries at κ = 0.002 and κ = 0.25.
+
+TERMINOLOGY (as in resubmission):
+  • Multimode Regime (κ < 0.002)
+  • Spectral Crossover (0.002 ≤ κ ≤ 0.25)
+  • Ground-State Dominated (κ > 0.25)
+
+Output: PNG and PDF at 300 dpi (publication quality)
+"""
+
+import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib.colors import LinearSegmentedColormap
+import pandas as pd
+import os
+
+# ============================================================================
+# CONFIGURATION
+# ============================================================================
+
+OUTPUT_DIR = "./"
+DPI = 300
+SAVE_FORMATS = ['png', 'pdf']
+
+# Color scheme (same as original)
+COLORS = {
+    'multimode': '#1f77b4',
+    'crossover': '#ff7f0e',
+    'ground_state': '#d62728',
+    'boundary_multimode': 'green',
+    'boundary_crossover': 'orange',
+    'boundary_ground_state': 'red',
+    'accent_purple': 'purple'
+}
+
+# ============================================================================
+# DATA LOADING / COMPUTATION (reuse from original)
+# ============================================================================
+
+def analytic_P(x, N, L, a, x0, n_max=5000, decay_tol=1e-12):
+    """Return P(x) normalized PDF for tethered polymer."""
+    x = np.asarray(x, dtype=float)
+    kappa = (N * a**2) / (L**2)
+    n = np.arange(1, n_max + 1)
+    lam = n * np.pi / L
+    sin0 = np.sin(lam * x0)
+    decay = np.exp(- (n**2) * (np.pi**2) * kappa / 8.0)
+    idx_keep = np.where(decay > decay_tol)[0]
+    last_idx = idx_keep[-1] if idx_keep.size else 0
+    n, lam, sin0, decay = n[:last_idx+1], lam[:last_idx+1], sin0[:last_idx+1], decay[:last_idx+1]
+    num = np.sum(sin0[:, None] * np.sin(np.outer(lam, x)) * decay[:, None], axis=0)
+    cos_term = 1 - (-1) ** n
+    den = np.sum((sin0 / (n * np.pi)) * cos_term * decay)
+    if np.abs(den) < 1e-16:
+        P_raw = num / L
+        area = np.trapz(P_raw, x)
+        if area <= 0:
+            raise RuntimeError("Normalization failed.")
+        P = P_raw / area
+    else:
+        P = num / (L * den)
+    P[P < 0] = 0.0
+    return P
+
+def modal_coeffs(N, L, a, x0, n_max=5000, decay_tol=1e-12):
+    """Return modal coefficients c_n for expansion of P(x)."""
+    kappa = (N * a**2) / (L**2)
+    n_all = np.arange(1, n_max + 1)
+    lam = n_all * np.pi / L
+    sin0 = np.sin(lam * x0)
+    decay = np.exp(- (n_all**2) * (np.pi**2) * kappa / 8.0)
+    idx_keep = np.where(decay > decay_tol)[0]
+    last_idx = idx_keep[-1] if idx_keep.size else 0
+    n, sin0, decay = n_all[:last_idx+1], sin0[:last_idx+1], decay[:last_idx+1]
+    cos_term = 1 - (-1) ** n
+    den = np.sum((sin0 / (n * np.pi)) * cos_term * decay)
+    if np.abs(den) < 1e-16:
+        c_n = np.zeros_like(n, dtype=float)
+    else:
+        c_n = (sin0 * decay) / (L * den)
+    return n, c_n
+
+def compute_case3_data(a=0.1, L=2.0, x0=None):
+    """Compute Case 3 P(x) confinement-strength scaling data."""
+    if x0 is None:
+        x0 = 0.5 * L
+    u_grid = np.linspace(0.01, 0.99, 600)
+    x_grid = u_grid * L
+    Na_over_L_arr = np.unique(np.hstack((
+        np.logspace(-2, -0.5, 8),
+        np.array([0.1, 0.5, 1, 2]),
+        np.logspace(0.7, 2, 12)
+    )))
+    Na_over_L_arr = np.sort(Na_over_L_arr)
+    kappa_vals, first_mode_frac_abs = [], []
+    for ratio in Na_over_L_arr:
+        N = ratio * (L / a)
+        kappa = (N * a**2) / (L**2)
+        kappa_vals.append(kappa)
+        n_modes, c_n = modal_coeffs(N, L, a, x0)
+        frac_abs = np.abs(c_n[0]) / np.sum(np.abs(c_n)) if len(c_n) > 0 else 0.0
+        first_mode_frac_abs.append(frac_abs)
+    return pd.DataFrame({'kappa': kappa_vals, 'FirstModeFracAbs': first_mode_frac_abs})
+
+def save_figure_multi_format(fig, base_filename, output_dir=OUTPUT_DIR,
+                             formats=SAVE_FORMATS, dpi=DPI):
+    """Save figure in multiple formats."""
+    os.makedirs(output_dir, exist_ok=True)
+    for fmt in formats:
+        filepath = os.path.join(output_dir, f"{base_filename}.{fmt}")
+        fig.savefig(filepath, dpi=dpi, format=fmt, bbox_inches='tight',
+                    facecolor='white', edgecolor='none')
+        print(f"  ✓ Saved ({fmt.upper()}, {dpi} dpi): {filepath}")
+
+# ============================================================================
+# FIGURE 11: 2D PHASE DIAGRAM WITH FIXED VERTICAL BOUNDARIES
+# ============================================================================
+
+def generate_figure11_fixed_boundaries(df, output_dir=OUTPUT_DIR):
+    """
+    Generate Figure 11 with manual vertical boundaries at κ = 0.002 and κ = 0.25.
+    """
+    print("\nGenerating Figure 11: 2D Phase Diagram (fixed boundaries)...")
+
+    # Extract data
+    kappa_data = df['kappa'].values
+    E1_vals = df['FirstModeFracAbs'].values
+
+    # ----- FIXED REGIME BOUNDARIES (κ values) -----
+    kappa_multimode_boundary = 0.002   # 2e-3
+    kappa_ground_boundary = 0.25       # 2.5e-1
+
+    # Get actual κ range from data
+    kappa_min = kappa_data[kappa_data > 0].min() if np.any(kappa_data > 0) else 1e-4
+    kappa_max = kappa_data.max()
+
+    # Define parameter ranges
+    a_L_min, a_L_max = 0.01, 0.5
+
+    # Create fine mesh for smooth visualization
+    kappa_grid = np.logspace(np.log10(kappa_min/2), np.log10(kappa_max*2), 200)
+    a_L_grid = np.linspace(a_L_min, a_L_max, 200)
+    kappa_mesh, a_L_mesh = np.meshgrid(kappa_grid, a_L_grid)
+
+    # Define regime map based on fixed κ boundaries and a/L
+    regime_map = np.zeros_like(kappa_mesh)
+    for i, a_L in enumerate(a_L_grid):
+        for j, kappa in enumerate(kappa_grid):
+            if kappa < kappa_multimode_boundary:
+                regime = 0  # Multimode
+            elif kappa < kappa_ground_boundary:
+                regime = 1  # Spectral crossover
+            else:
+                regime = 2  # Ground-state dominated
+            if a_L > 0.2:
+                regime += 0.3  # Shift for non-Gaussian effects
+            regime_map[i, j] = regime
+
+    # Custom colormap for six regimes (same as original)
+    cmap = LinearSegmentedColormap.from_list('regimes',
+                                              ['lightblue', 'lightyellow', 'lightcoral',
+                                               'steelblue', 'gold', 'darkred'])
+
+    fig, ax = plt.subplots(figsize=(14, 10))
+
+    # Plot contourf
+    contourf = ax.contourf(kappa_mesh, a_L_mesh, regime_map,
+                          levels=[0, 0.3, 0.6, 0.9, 1.2, 1.5, 2.0, 2.3],
+                          cmap=cmap, alpha=0.65)
+
+    # ----- Vertical lines at FIXED boundaries -----
+    ax.axvline(x=kappa_multimode_boundary, color=COLORS['boundary_multimode'],
+               linewidth=2.5, linestyle='--', alpha=0.7,
+               label=f'Multimode / Crossover (κ = {kappa_multimode_boundary})')
+    ax.axvline(x=kappa_ground_boundary, color=COLORS['boundary_ground_state'],
+               linewidth=2.5, linestyle='--', alpha=0.7,
+               label=f'Crossover / Ground-State (κ = {kappa_ground_boundary})')
+
+    # Horizontal lines (unchanged)
+    ax.axhline(y=0.1, color=COLORS['accent_purple'], linewidth=2, linestyle=':',
+               alpha=0.7, label='a/L ~ 0.1: Non-Gaussian onset')
+    ax.axhline(y=0.2, color=COLORS['accent_purple'], linewidth=2, linestyle='-',
+               alpha=0.5, label='a/L ~ 0.2: Non-Gaussian strong')
+
+    # Region labels (same as original)
+    label_specs = [
+        {'pos': (kappa_min, 0.05), 'text': 'Ideal Gaussian\nMultimode',
+         'color': 'lightblue', 'edge': 'darkblue'},
+        {'pos': ((kappa_multimode_boundary + kappa_ground_boundary)/2, 0.05),
+         'text': 'Gaussian\nSpectral Crossover',
+         'color': 'lightyellow', 'edge': 'darkorange'},
+        {'pos': (kappa_max, 0.05), 'text': 'Gaussian\nGround-State',
+         'color': 'lightcoral', 'edge': 'darkred'},
+        {'pos': (kappa_min, 0.35), 'text': 'Stiff Gaussian\nMultimode',
+         'color': 'steelblue', 'edge': 'navy'},
+        {'pos': ((kappa_multimode_boundary + kappa_ground_boundary)/2, 0.35),
+         'text': 'Non-Gaussian\nSpectral Crossover',
+         'color': 'gold', 'edge': 'orange'},
+        {'pos': (kappa_max, 0.35), 'text': 'Non-Gaussian\nGround-State',
+         'color': 'lightcoral', 'edge': 'maroon'},
+    ]
+    for spec in label_specs:
+        ax.text(spec['pos'][0], spec['pos'][1], spec['text'],
+               fontsize=11, fontweight='bold', ha='center', va='center',
+               bbox=dict(boxstyle='round', facecolor=spec['color'], alpha=0.8,
+                        edgecolor=spec['edge'], linewidth=2))
+
+    # Overlay Case 3 data (a/L = 0.1, varying κ)
+    a_L_data = np.full_like(kappa_data, 0.1, dtype=float)
+    ax.plot(kappa_data, a_L_data, 'k*', markersize=20,
+           label='Case 3 P(x) Data Points (a/L = 0.1)',
+           markeredgecolor='white', markeredgewidth=1.5)
+
+    # Axes configuration
+    ax.set_xscale('log')
+    ax.set_xlim(kappa_min / 2, kappa_max * 2)
+    ax.set_ylim(0, 0.5)
+    ax.set_xlabel('Dimensionless Confinement Strength κ = Na²/L² (log scale)',
+                 fontsize=18, fontweight='bold')
+    ax.set_ylabel('Normalized Kuhn Length a/L', fontsize=18, fontweight='bold')
+    ax.set_title('Figure 11: 2D Phase Diagram — κ vs a/L with Regime Identification\n'
+                '(Ideal-Chain Spectral Classification)',
+                fontsize=14, fontweight='bold', pad=20)
+    ax.grid(True, alpha=0.3, which='both', linestyle='-', linewidth=0.5)
+    ax.legend(loc='upper left', fontsize=10, framealpha=0.95,
+             title='Regime Boundaries', title_fontsize=11)
+    ax.tick_params(labelsize=11)
+
+    # Colorbar
+    cbar = plt.colorbar(contourf, ax=ax, label='Regime Index', shrink=0.6, pad=0.02)
+    cbar.set_label('Regime Index', fontsize=11, fontweight='bold')
+
+    plt.tight_layout()
+
+    # Save
+    save_figure_multi_format(fig, 'figure11_2D_phase_diagram_fixed_boundaries',
+                             output_dir=output_dir, formats=SAVE_FORMATS, dpi=DPI)
+    plt.close(fig)
+    print("  ✓ Figure 11 generation complete (fixed vertical boundaries at κ=0.002, 0.25)")
+
+# ============================================================================
+# MAIN EXECUTION
+# ============================================================================
+
+def main():
+    print("\n" + "="*80)
+    print("FIGURE 11: 2D Phase Diagram with Fixed Boundaries")
+    print("  Multimode / Crossover boundary: κ = 0.002")
+    print("  Crossover / Ground-State boundary: κ = 0.25")
+    print("="*80)
+
+    # Parameters (same as original Case 3)
+    a = 0.1  # μm
+    L = 2.0  # μm
+    x0 = L / 2
+
+    print(f"\nComputing Case 3 data (a={a} μm, L={L} μm, x0={x0} μm)...")
+    df = compute_case3_data(a=a, L=L, x0=x0)
+
+    # Optional: save diagnostics for reference
+    df.to_csv("case3_diagnostics_for_figure11.csv", index=False)
+    print("✓ Diagnostics saved to case3_diagnostics_for_figure11.csv")
+
+    generate_figure11_fixed_boundaries(df, output_dir=OUTPUT_DIR)
+
+    print("\n" + "="*80)
+    print("✓ FIGURE 11 GENERATION COMPLETE")
+    print("="*80)
+
+if __name__ == "__main__":
+    main()
